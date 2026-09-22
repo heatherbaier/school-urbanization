@@ -32,14 +32,28 @@ log = get_logger(__name__)
 
 
 def buffer_cells(sites: pd.DataFrame, buffers_km, proj_crs: str, transform, shape, raster_crs):
-    """Map (site_id, buffer_km) -> flat indices of grid cells inside the buffer."""
+    """Map (site_id, buffer_km) -> (flat indices of in-raster cells inside the
+    buffer, number of cells the full buffer covers).
+
+    Sites with no usable coordinate, or whose buffer misses the raster, get
+    an empty index array, so their values come out NaN instead of failing.
+    """
+    ok = np.isfinite(sites["x"].to_numpy(float)) & np.isfinite(sites["y"].to_numpy(float))
+    if (~ok).any():
+        log.warning("%d sites have no usable coordinate: %s", int((~ok).sum()),
+                    ", ".join(sites.loc[~ok, "site_id"].astype(str).head(10)))
     pts = gpd.GeoSeries(gpd.points_from_xy(sites["x"], sites["y"]), crs=proj_crs)
+    empty = np.array([], dtype=np.int64)
     cells = {}
+    partial, missing = set(), set()
     for b in buffers_km:
         polys = pts.buffer(b * 1000, resolution=64).to_crs(raster_crs)
-        for sid, poly in zip(sites["site_id"], polys):
-            win = from_bounds(*poly.bounds, transform=transform)
-            win = snap_window(win)
+        for sid, poly, good in zip(sites["site_id"], polys, ok):
+            bounds = poly.bounds if good and not poly.is_empty else None
+            if bounds is None or not np.all(np.isfinite(bounds)):
+                cells[(sid, b)] = (empty, 0)
+                continue
+            win = snap_window(from_bounds(*bounds, transform=transform))
             r0, c0 = int(win.row_off), int(win.col_off)
             h, w = int(win.height), int(win.width)
             m = geometry_mask([poly], out_shape=(h, w), invert=True,
@@ -47,9 +61,18 @@ def buffer_cells(sites: pd.DataFrame, buffers_km, proj_crs: str, transform, shap
             rr, cc = np.nonzero(m)
             rr, cc = rr + r0, cc + c0
             inside = (rr >= 0) & (rr < shape[0]) & (cc >= 0) & (cc < shape[1])
-            if not inside.all():
-                log.warning("buffer %s km around %s extends past the raster", b, sid)
-            cells[(sid, b)] = np.ravel_multi_index((rr[inside], cc[inside]), shape)
+            if not inside.any():
+                missing.add(sid)
+            elif not inside.all():
+                partial.add(sid)
+            cells[(sid, b)] = (np.ravel_multi_index((rr[inside], cc[inside]), shape), len(rr))
+    if partial:
+        log.warning("%d sites have a buffer running past the raster edge (e.g. %s); "
+                    "they are kept only where valid_frac >= min_valid_frac",
+                    len(partial), ", ".join(sorted(partial)[:5]))
+    if missing:
+        log.warning("%d sites lie entirely outside the raster (e.g. %s)",
+                    len(missing), ", ".join(sorted(missing)[:5]))
     return cells
 
 
@@ -74,12 +97,13 @@ def extract(raster_paths: dict[int, Path], sites: pd.DataFrame, params: dict) ->
         if nod is not None:
             invalid |= a == nod
         a[invalid] = np.nan
-        for (sid, b), idx in cells.items():
+        for (sid, b), (idx, n_full) in cells.items():
             v = a[idx]
-            n = len(v)
             ok = np.count_nonzero(~np.isnan(v))
+            # valid_frac is relative to the whole buffer, so a buffer cut off
+            # by the raster edge counts the missing part as invalid.
             rows.append((sid, year, b, np.nanmean(v) / 100 if ok else np.nan,
-                         ok / n if n else 0.0, n))
+                         ok / n_full if n_full else 0.0, n_full))
         log.info("extracted %d", year)
     out = pd.DataFrame(rows, columns=["site_id", "year", "buffer_km", "imp_mean", "valid_frac", "n_cells"])
     out.loc[out["valid_frac"] < params["exposure"]["min_valid_frac"], "imp_mean"] = np.nan

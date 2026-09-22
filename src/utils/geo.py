@@ -16,8 +16,11 @@ def projected_xy(df: pd.DataFrame, crs: str, lon="longitude", lat="latitude") ->
     """Return df with x/y columns (metres) in the given projected CRS."""
     g = points_gdf(df, lon=lon, lat=lat).to_crs(crs)
     out = df.copy()
-    out["x"] = g.geometry.x.to_numpy()
-    out["y"] = g.geometry.y.to_numpy()
+    x = g.geometry.x.to_numpy(dtype=float, copy=True)
+    y = g.geometry.y.to_numpy(dtype=float, copy=True)
+    bad = ~(np.isfinite(x) & np.isfinite(y))
+    x[bad], y[bad] = np.nan, np.nan
+    out["x"], out["y"] = x, y
     return out
 
 

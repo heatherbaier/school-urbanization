@@ -63,3 +63,22 @@ def test_nlcd_clip_from_local_zip(tmp_path, params):
     nlcd.clip_year(gdal_path, (1_000_600, 1_300_000 - 600, 1_000_900, 1_300_000 - 300), out, 250)
     with rasterio.open(out) as d:
         np.testing.assert_array_equal(d.read(1), a[10:20, 20:30])
+
+
+def test_buffers_survive_bad_and_edge_coordinates(tmp_path, params):
+    crs = params["crs"]["projected"]
+    x0, y0 = 700_000, 3_740_000
+    tr = from_origin(x0, y0 + 30 * 600, 30, 30)
+    _write(tmp_path / "fctimp_2001.tif", np.full((600, 600), 40), tr, crs)
+    sites = pd.DataFrame(dict(
+        site_id=["good", "inf", "nan", "far", "edge"],
+        x=[x0 + 9000, np.inf, np.nan, x0 + 500_000, x0 + 100],
+        y=[y0 + 9000, np.inf, np.nan, y0 + 500_000, y0 + 9000]))
+    out = buffers.extract({2001: tmp_path / "fctimp_2001.tif"}, sites, params).set_index(["site_id", "buffer_km"])
+    assert np.isclose(out.loc[("good", 1), "imp_mean"], 0.4)
+    for sid in ("inf", "nan", "far"):
+        assert out.loc[(sid, 1), "imp_mean"] != out.loc[(sid, 1), "imp_mean"]   # NaN
+        assert out.loc[(sid, 1), "valid_frac"] == 0
+    # About half of a buffer centred 100 m inside the west edge is off-raster.
+    assert 0.4 < out.loc[("edge", 2), "valid_frac"] < 0.6
+    assert np.isnan(out.loc[("edge", 2), "imp_mean"])

@@ -45,7 +45,8 @@ def clean(raw: pd.DataFrame) -> pd.DataFrame:
     df = missing_to_nan(df, NUMERIC)
     for c in ("latitude", "longitude"):
         df[c] = pd.to_numeric(df[c], errors="coerce")
-    bad = (df["latitude"].abs() < 1) | (df["longitude"].abs() < 1)
+    bad = ((df["latitude"].abs() < 1) | (df["longitude"].abs() < 1)
+           | (df["latitude"].abs() > 90) | (df["longitude"].abs() > 180))
     df.loc[bad, ["latitude", "longitude"]] = np.nan
     dup = df.duplicated(["ncessch", "year"])
     if dup.any():
@@ -72,6 +73,33 @@ def study_ids(df: pd.DataFrame, params) -> set[str]:
     return by_code | by_point
 
 
+def null_outside_aoi(df: pd.DataFrame) -> pd.DataFrame:
+    """Blank coordinates that fall outside the AOI (counties + clip margin).
+
+    Every kept school is in a study county by CCD county code or by point in
+    some year, so a coordinate far outside the AOI is a geocode error for
+    that year. Blanking it lets relocation.py fill it from the school's
+    other years instead of creating a spurious site.
+    """
+    df = df.copy()
+    df["coord_outside_aoi"] = False
+    aoi_fp = path("interim", "study_area", "aoi.gpkg", mkdir=False)
+    if not aoi_fp.exists():
+        log.warning("aoi.gpkg missing; not checking coordinates against the AOI")
+        return df
+    aoi = gpd.read_file(aoi_fp).to_crs("EPSG:4326").union_all()
+    has = df["latitude"].notna() & df["longitude"].notna()
+    pts = gpd.points_from_xy(df.loc[has, "longitude"], df.loc[has, "latitude"])
+    outside = pd.Series(~aoi.contains(pts) if len(pts) else [], index=df.index[has], dtype=bool)
+    idx = outside[outside].index
+    df.loc[idx, "coord_outside_aoi"] = True
+    df.loc[idx, ["latitude", "longitude"]] = np.nan
+    if len(idx):
+        log.warning("blanked %d school-year coordinates outside the AOI (%d schools)",
+                    len(idx), df.loc[idx, "ncessch"].nunique())
+    return df
+
+
 def flag_primary(df: pd.DataFrame, params) -> pd.DataFrame:
     cfg = params["panel"]
     df = df.copy()
@@ -94,6 +122,7 @@ def main():
     y0, y1 = params["years"]["school_start"], params["years"]["school_end"]
     df = clean(read_cached("ccd_directory", years=range(y0, y1 + 1)))
     df = df[df["ncessch"].isin(study_ids(df, params))]
+    df = null_outside_aoi(df)
     df = flag_primary(df, params)
     out = path("interim", "ccd", "directory.parquet")
     df.to_parquet(out, index=False)
