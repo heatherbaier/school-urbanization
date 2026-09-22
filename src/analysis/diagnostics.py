@@ -36,7 +36,8 @@ log = get_logger(__name__)
 # Sensitivity grid. Kept small so it runs in a minute or two.
 GRID = {
     "buffer_km": [1, 2, 5],
-    "threshold": [0.15, 0.20, 0.25, 0.30],
+    "threshold": [0.15, 0.20, 0.25, 0.30],      # level mode
+    "change": [0.05, 0.08, 0.10, 0.15],         # change mode
     "max_impervious": [0.05, 0.10, 0.15],
 }
 EVENT_WINDOW = range(-5, 11)
@@ -72,24 +73,80 @@ def event_years(t: pd.DataFrame) -> pd.DataFrame:
             .reset_index().rename(columns={"g_land": "event_year"}))
 
 
+def _grid_row(panel, imp, smod, params, mode, b, value, mx):
+    defs = copy.deepcopy(params["definitions"])
+    defs["fringe"]["buffer_km"] = b
+    defs["fringe"]["max_impervious"] = mx
+    defs["land_event"].update(mode=mode, buffer_km=b,
+                              **({"change": value} if mode == "change" else {"threshold": value}))
+    t = events.build(panel, imp, smod, params, defs)
+    t = t[t["in_primary"] & t["is_fringe"]]
+    tr = t[t["group"] == "treated"]
+    return dict(mode=mode, buffer_km=b, event_value=value, fringe_max_imp=mx, n_fringe=len(t),
+                n_treated=len(tr), n_treated_pre3=int((tr["n_pre_years"] >= 3).sum()),
+                n_treated_pre5=int((tr["n_pre_years"] >= 5).sum()),
+                n_never=int((t["group"] == "never_treated").sum()),
+                n_censored=int((t["group"] == "censored").sum()))
+
+
 def sensitivity(panel, imp, smod, params) -> pd.DataFrame:
+    """Counts across the grid. event_value is the rise above baseline in
+    change mode and the absolute threshold in level mode."""
     rows = []
+    for b, d, mx in itertools.product(GRID["buffer_km"], GRID["change"], GRID["max_impervious"]):
+        rows.append(_grid_row(panel, imp, smod, params, "change", b, d, mx))
     for b, thr, mx in itertools.product(GRID["buffer_km"], GRID["threshold"], GRID["max_impervious"]):
-        if mx >= thr:
-            continue
-        defs = copy.deepcopy(params["definitions"])
-        defs["fringe"]["buffer_km"] = b
-        defs["fringe"]["max_impervious"] = mx
-        defs["land_event"]["buffer_km"] = b
-        defs["land_event"]["threshold"] = thr
-        t = events.build(panel, imp, smod, params, defs)
-        t = t[t["in_primary"] & t["is_fringe"]]
-        tr = t[t["group"] == "treated"]
-        rows.append(dict(buffer_km=b, threshold=thr, fringe_max_imp=mx, n_fringe=len(t),
-                         n_treated=len(tr), n_treated_pre3=int((tr["n_pre_years"] >= 3).sum()),
-                         n_treated_pre5=int((tr["n_pre_years"] >= 5).sum()),
-                         n_never=int((t["group"] == "never_treated").sum()),
-                         n_censored=int((t["group"] == "censored").sum())))
+        if mx < thr:
+            rows.append(_grid_row(panel, imp, smod, params, "level", b, thr, mx))
+    return pd.DataFrame(rows)
+
+
+def early_ccd_coverage(params) -> pd.DataFrame | None:
+    """Coverage and geocode quality of CCD years before school_start.
+
+    Uses whatever early directory (and race enrollment) years are cached.
+    For schools present both in an early year and in school_start, reports
+    how far the early coordinate is from the school_start one, which flags
+    coarse early geocodes.
+    """
+    from src.ingest.urban_api import read_cached
+    from src.panel.directory import clean
+    from src.utils.config import county_fips
+    from src.utils.geo import projected_xy
+
+    y_ref = params["years"]["school_start"]
+    early = range(params["years"].get("early_ccd_start", 1986), y_ref)
+    try:
+        d = clean(read_cached("ccd_directory", years=[*early, y_ref]))
+    except FileNotFoundError:
+        return None
+    d = d[d["county_code"].isin(county_fips(params))]
+    if not (d["year"] < y_ref).any():
+        return None
+    try:
+        race = read_cached("ccd_enrollment_race", years=list(early))
+        race = race[pd.to_numeric(race.get("race"), errors="coerce") == 1]
+        race = race.assign(ncessch=race["ncessch"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(12),
+                           has_race=pd.to_numeric(race["enrollment"], errors="coerce") >= 0)
+        race_ok = race.groupby(["ncessch", "year"])["has_race"].any()
+    except FileNotFoundError:
+        race_ok = None
+    d = projected_xy(d, params["crs"]["projected"])
+    ref = d[d["year"] == y_ref].set_index("ncessch")[["x", "y"]]
+    rows = []
+    for y, g in d[d["year"] < y_ref].groupby("year"):
+        m = g.join(ref, on="ncessch", rsuffix="_ref").dropna(subset=["x", "y", "x_ref", "y_ref"])
+        dist = np.hypot(m["x"] - m["x_ref"], m["y"] - m["y_ref"])
+        rows.append(dict(
+            year=y, n_schools=len(g),
+            share_with_coords=g["x"].notna().mean(),
+            share_with_enrollment=g["enrollment"].notna().mean() if "enrollment" in g else np.nan,
+            share_with_race=(g.set_index(["ncessch", "year"]).index.map(race_ok).fillna(False).mean()
+                             if race_ok is not None else np.nan),
+            n_matched_to_ref=len(m),
+            median_m_from_ref=dist.median() if len(m) else np.nan,
+            share_over_500m_from_ref=(dist > 500).mean() if len(m) else np.nan,
+        ))
     return pd.DataFrame(rows)
 
 
@@ -157,21 +214,25 @@ def figures(t, imp, panel, params):
     fig.savefig(out["baseline_imp"], dpi=150)
     plt.close(fig)
 
-    tr = t.loc[t["in_primary"] & (t["group"] == "treated"), ["school_uid", "g_land"]]
+    tr = t.loc[t["in_primary"] & (t["group"] == "treated"), ["school_uid", "g_land", "imp_base_event"]]
     le = defs["land_event"]
+    change_mode = le.get("mode", "level") == "change"
     sites = events.site_by_year(panel[panel["school_uid"].isin(tr["school_uid"])],
                                 sorted(imp["year"].unique()))
     ser = events.exposure_series(sites, imp, le["buffer_km"]).merge(tr, on="school_uid")
     ser["rel_year"] = ser["year"] - ser["g_land"]
     ser = ser[ser["rel_year"].between(-10, 10)]
+    if change_mode:
+        ser["imp_mean"] = ser["imp_mean"] - ser["imp_base_event"]
     fig, ax = plt.subplots(figsize=(7, 3.5), facecolor=SURFACE)
     if len(ser):
         q = ser.groupby("rel_year")["imp_mean"].quantile([0.25, 0.5, 0.75]).unstack()
         ax.fill_between(q.index, q[0.25], q[0.75], color=MARK, alpha=0.18, linewidth=0)
         ax.plot(q.index, q[0.5], color=MARK, linewidth=2)
-    ax.axhline(le["threshold"], color=INK, linewidth=1.2, linestyle="--")
+    ax.axhline(le["change"] if change_mode else le["threshold"], color=INK, linewidth=1.2, linestyle="--")
     ax.axvline(0, color=GRIDC, linewidth=1)
-    _style(ax, f"Impervious fraction around the event, treated schools ({le['buffer_km']} km)",
+    _style(ax, (f"Impervious {'change from baseline' if change_mode else 'fraction'} around the event, "
+                f"treated schools ({le['buffer_km']} km)"),
            "years relative to event", "median and interquartile range")
     fig.tight_layout()
     out["trajectory"] = path("figures", "diag_event_trajectory.png")
@@ -204,6 +265,9 @@ def main():
         "sensitivity": sensitivity(panel, imp, smod, params),
         "outcome_coverage": outcome_coverage(panel, t),
     }
+    early = early_ccd_coverage(params)
+    if early is not None:
+        tables["early_ccd_coverage"] = early
     lvp = land_vs_pop(t)
     for k, v in tables.items():
         v.to_csv(path("tables", f"diag_{k}.csv"), index=False)
@@ -215,6 +279,22 @@ def main():
     # links to the figures relative to itself.
     report_dir = path("figures", mkdir=True).parent
     rel = lambda p: os.path.relpath(p, report_dir).replace(os.sep, "/")  # noqa: E731
+    le = d["land_event"]
+    if le.get("mode", "level") == "change":
+        event_text = (f"The land event is the first year impervious in the {le['buffer_km']} km buffer is at least "
+                      f"{le['change']} above the school's baseline value and stays there for {le['persistence_years']} years")
+    else:
+        event_text = (f"The land event is the first year the {le['buffer_km']} km buffer reaches "
+                      f"{le['threshold']} and stays there for {le['persistence_years']} years")
+    y0 = params["years"]["school_start"]
+    if early is not None:
+        early_text = (f"Cached CCD years before {y0}, study counties by CCD county code. Distances compare each "
+                      f"school's coordinate with its own {y0} coordinate. Large or frequent gaps mean coarse early "
+                      "geocodes, which would make early buffer exposure unreliable.\n\n" + _md(early))
+    else:
+        early_text = (f"No CCD years before {y0} are cached. Pull them with\n\n"
+                      f"    python -m src.ingest.ccd --only directory enrollment --start "
+                      f"{params['years'].get('early_ccd_start', 1986)} --end {y0 - 1}\n\nand rerun this report.")
     report = f"""# Pilot diagnostics — {params['pilot']}
 
 Primary sample only (regular, non-charter, non-virtual schools) unless stated.
@@ -223,7 +303,7 @@ Primary sample only (regular, non-charter, non-virtual schools) unless stated.
 
 - Baseline is the school's {'first panel year' if d['baseline']['mode'] == 'first_year' else 'year ' + str(d['baseline']['fixed_year'])}
 - Fringe means impervious below {d['fringe']['max_impervious']} in the {d['fringe']['buffer_km']} km buffer and within {d['fringe']['max_km_to_urban_cluster']} km of a GHS-SMOD urban cluster at baseline
-- The land event is the first year the {d['land_event']['buffer_km']} km buffer reaches {d['land_event']['threshold']} and stays there for {d['land_event']['persistence_years']} years
+- {event_text}
 
 ## Sample funnel
 
@@ -241,11 +321,13 @@ Primary sample only (regular, non-charter, non-virtual schools) unless stated.
 
 ## Impervious trajectory around the event
 
-This is a construction check. The median should cross the dashed threshold at 0 and stay above it.
+This is a construction check. The median should cross the dashed line at 0 and stay above it.
 
 ![trajectory]({rel(figs['trajectory'])})
 
 ## Sensitivity of counts to the definitions
+
+event_value is the rise above the school's baseline in change mode and the absolute threshold in level mode.
 
 {_md(tables['sensitivity'])}
 
@@ -258,6 +340,12 @@ Share of treated schools with a non-missing value at each year relative to the e
 ## Land versus population events among fringe schools
 
 {_md(lvp.reset_index())}
+
+## CCD coverage before {y0}
+
+Whether extending the school panel back into the 1990s boom is feasible.
+
+{early_text}
 """
     fp = report_dir / "diagnostics.md"
     fp.write_text(report)

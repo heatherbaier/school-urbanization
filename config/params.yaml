@@ -54,6 +54,11 @@ years:
   # land-based pre-period even when school data starts later.
   land_start: 1995
   land_end: 2023
+  # First year for the pre-2000 CCD coverage check in the diagnostics
+  # (pulled with python -m src.ingest.ccd --only directory enrollment
+  # --start 1986 --end 1999). Not used by the panel unless school_start
+  # is lowered.
+  early_ccd_start: 1986
 
 crs:
   # NAD83 / UTM zone 16N. Used for all distance and buffer geometry.
@@ -183,7 +188,13 @@ definitions:
     max_impervious: 0.10
     max_km_to_urban_cluster: 10
   land_event:
+    # change  treated when impervious rises at least `change` above the
+    #         school's own baseline value and stays there (primary; fits
+    #         low-density sprawl and compares across metros)
+    # level   treated when impervious reaches `threshold` and stays there
+    mode: change
     buffer_km: 2
+    change: 0.10
     threshold: 0.25
     persistence_years: 3
   pop_event:

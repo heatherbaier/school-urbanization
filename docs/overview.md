@@ -63,11 +63,25 @@ five-year epochs, with 2025 and 2030 marked as projections.
 
 All thresholds are in `config/params.yaml` under `definitions`. The fringe
 sample requires a low impervious fraction in the 2 km buffer at baseline and a
-location within 10 km of a GHS-SMOD urban cluster. The land-based treatment
-event is the first year the buffer crosses the impervious threshold and stays
-above it for at least three years. The baseline is each school's first
-observed year by default, since many fringe schools in the outer counties
-opened after 2000.
+location within 10 km of a GHS-SMOD urban cluster. The baseline is each
+school's first observed year by default, since many fringe schools in the
+outer counties opened after 2000.
+
+The land-based treatment event is defined by change rather than level. A
+school is treated in the first year its buffer impervious fraction sits at
+least 10 percentage points above the school's own baseline value and stays
+there for at least three years. The first diagnostics run showed why. Atlanta
+sprawl is low-density and wooded, so a 2 km buffer around a newly suburban
+school rarely reaches a fixed 25 percent, and that definition left 5 treated
+schools out of 269 fringe schools. A change-based rule captures the
+transition whatever the local density, and it should travel better across
+metros that build at very different densities. The fixed-level rule is kept
+as a robustness check (`land_event.mode: level`).
+
+Atlanta suburbanized fastest in the 1990s, before the school panel starts in
+2000. The diagnostics report checks whether earlier CCD years have usable
+coverage and geocodes, to decide whether the panel can start earlier for the
+enrollment and composition outcomes.
 
 ## Status
 
