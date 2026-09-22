@@ -101,13 +101,17 @@ def sensitivity(panel, imp, smod, params) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def early_ccd_coverage(params) -> pd.DataFrame | None:
+def early_ccd_coverage(params) -> tuple[pd.DataFrame | None, str]:
     """Coverage and geocode quality of CCD years before school_start.
 
     Uses whatever early directory (and race enrollment) years are cached.
-    For schools present both in an early year and in school_start, reports
-    how far the early coordinate is from the school_start one, which flags
-    coarse early geocodes.
+    Early schools are in the study area if their CCD county code is a study
+    county or their NCES ID is in the cleaned study directory (older CCD
+    years often lack a county code). For schools present both in an early
+    year and in school_start, reports how far the early coordinate is from
+    the school_start one, which flags coarse early geocodes.
+
+    Returns the table (or None) and a status message for the report.
     """
     from src.ingest.urban_api import read_cached
     from src.panel.directory import clean
@@ -115,16 +119,26 @@ def early_ccd_coverage(params) -> pd.DataFrame | None:
     from src.utils.geo import projected_xy
 
     y_ref = params["years"]["school_start"]
-    early = range(params["years"].get("early_ccd_start", 1986), y_ref)
-    try:
-        d = clean(read_cached("ccd_directory", years=[*early, y_ref]))
-    except FileNotFoundError:
-        return None
-    d = d[d["county_code"].isin(county_fips(params))]
+    early = list(range(params["years"].get("early_ccd_start", 1986), y_ref))
+    cache = path("raw", "urban", "ccd_directory", mkdir=False)
+    cached = sorted(int(f.stem) for f in cache.glob("*.parquet") if f.stem.isdigit() and int(f.stem) in early)
+    if not cached:
+        return None, "not_cached"
+    d = clean(read_cached("ccd_directory", years=[*cached, y_ref]))
+    study = set()
+    fp = path("interim", "ccd", "directory.parquet", mkdir=False)
+    if fp.exists():
+        study = set(pd.read_parquet(fp, columns=["ncessch"])["ncessch"])
+    in_area = d["county_code"].isin(county_fips(params)) | d["ncessch"].isin(study)
+    log.info("early CCD years cached: %s; %d early rows, %d with a study county code, %d matched by ID",
+             cached, int((d["year"] < y_ref).sum()),
+             int((d["county_code"].isin(county_fips(params)) & (d["year"] < y_ref)).sum()),
+             int((d["ncessch"].isin(study) & (d["year"] < y_ref)).sum()))
+    d = d[in_area]
     if not (d["year"] < y_ref).any():
-        return None
+        return None, f"cached_no_match:{cached[0]}-{cached[-1]}"
     try:
-        race = read_cached("ccd_enrollment_race", years=list(early))
+        race = read_cached("ccd_enrollment_race", years=cached)
         race = race[pd.to_numeric(race.get("race"), errors="coerce") == 1]
         race = race.assign(ncessch=race["ncessch"].astype(str).str.replace(r"\.0$", "", regex=True).str.zfill(12),
                            has_race=pd.to_numeric(race["enrollment"], errors="coerce") >= 0)
@@ -139,6 +153,7 @@ def early_ccd_coverage(params) -> pd.DataFrame | None:
         dist = np.hypot(m["x"] - m["x_ref"], m["y"] - m["y_ref"])
         rows.append(dict(
             year=y, n_schools=len(g),
+            share_with_county_code=g["county_code"].notna().mean(),
             share_with_coords=g["x"].notna().mean(),
             share_with_enrollment=g["enrollment"].notna().mean() if "enrollment" in g else np.nan,
             share_with_race=(g.set_index(["ncessch", "year"]).index.map(race_ok).fillna(False).mean()
@@ -147,7 +162,7 @@ def early_ccd_coverage(params) -> pd.DataFrame | None:
             median_m_from_ref=dist.median() if len(m) else np.nan,
             share_over_500m_from_ref=(dist > 500).mean() if len(m) else np.nan,
         ))
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows), "ok"
 
 
 def outcome_coverage(panel: pd.DataFrame, t: pd.DataFrame) -> pd.DataFrame:
@@ -265,7 +280,7 @@ def main():
         "sensitivity": sensitivity(panel, imp, smod, params),
         "outcome_coverage": outcome_coverage(panel, t),
     }
-    early = early_ccd_coverage(params)
+    early, early_status = early_ccd_coverage(params)
     if early is not None:
         tables["early_ccd_coverage"] = early
     lvp = land_vs_pop(t)
@@ -291,6 +306,12 @@ def main():
         early_text = (f"Cached CCD years before {y0}, study counties by CCD county code. Distances compare each "
                       f"school's coordinate with its own {y0} coordinate. Large or frequent gaps mean coarse early "
                       "geocodes, which would make early buffer exposure unreliable.\n\n" + _md(early))
+    elif early_status.startswith("cached_no_match"):
+        span = early_status.split(":")[1]
+        early_text = (f"CCD directory years {span} are cached, but none of their schools could be placed in the "
+                      "study area, either by county code or by NCES ID. Check one early year by hand, for example "
+                      "`pd.read_parquet('data/raw/urban/ccd_directory/1995.parquet')`, to see which fields the "
+                      "API returns for those years.")
     else:
         early_text = (f"No CCD years before {y0} are cached. Pull them with\n\n"
                       f"    python -m src.ingest.ccd --only directory enrollment --start "
