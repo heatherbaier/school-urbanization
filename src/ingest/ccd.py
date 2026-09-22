@@ -6,10 +6,12 @@ re-downloading.
 
     python -m src.ingest.ccd                 # everything in params.yaml
     python -m src.ingest.ccd --only directory enrollment
+    python -m src.ingest.ccd --only directory enrollment --start 1986 --end 1999
 """
 from __future__ import annotations
 
 import argparse
+import copy
 
 from src.ingest.urban_api import UrbanClient
 from src.utils.config import load_params
@@ -73,8 +75,16 @@ PULLS = {
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--only", nargs="+", choices=list(PULLS), default=None)
+    ap.add_argument("--start", type=int, default=None, help="override years.school_start")
+    ap.add_argument("--end", type=int, default=None, help="override years.school_end")
     args = ap.parse_args(argv)
     params = load_params()
+    if args.start is not None or args.end is not None:
+        params = copy.deepcopy(params)
+        if args.start is not None:
+            params["years"]["school_start"] = args.start
+        if args.end is not None:
+            params["years"]["school_end"] = args.end
     cfg = params["sources"]["urban_api"]
     todo = args.only or [k for k in PULLS
                          if k in ("directory", "enrollment")

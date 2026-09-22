@@ -9,8 +9,10 @@ Per school (school_uid) this builds
     imp_base             impervious fraction in the fringe buffer at baseline
     km_to_cluster_base   distance to an urban cluster at the baseline epoch
     is_fringe            low impervious and near an urban cluster at baseline
-    g_land               first year the event buffer crosses the threshold and
-                         stays above it for persistence_years (NaN if none)
+    g_land               first year the event buffer reaches the event threshold
+                         and stays there for persistence_years (NaN if none).
+                         The threshold is imp_base_event + change in change
+                         mode, or the fixed threshold in level mode
     land_censored        crossed near the end of the land series, too late to
                          confirm persistence, so neither treated nor never-treated
     g_pop                first observed GHS-SMOD epoch after baseline in which
@@ -156,16 +158,26 @@ def build(panel: pd.DataFrame, imp: pd.DataFrame, smod: pd.DataFrame | None,
 
     # Land-based event.
     le = defs["land_event"]
+    mode = le.get("mode", "level")
     ser_e = exposure_series(sites, imp, le["buffer_km"])
+    base_e = ser_e.merge(out[["school_uid", "baseline_year"]], on="school_uid")
+    base_e = base_e[base_e["year"] == base_e["baseline_year"]].set_index("school_uid")["imp_mean"]
+    out["imp_base_event"] = out["school_uid"].map(base_e)
+    if mode == "change":
+        out["event_threshold"] = out["imp_base_event"] + le["change"]
+    elif mode == "level":
+        out["event_threshold"] = float(le["threshold"])
+    else:
+        raise ValueError(f"land_event.mode must be 'change' or 'level', got {mode!r}")
     ser_by = {u: g for u, g in ser_e.groupby("school_uid")}
     g_land, cens = [], []
-    for u, by in zip(out["school_uid"], out["baseline_year"]):
+    for u, by, thr in zip(out["school_uid"], out["baseline_year"], out["event_threshold"]):
         g = ser_by.get(u)
-        if g is None or np.isnan(by):
+        if g is None or np.isnan(by) or np.isnan(thr):
             g_land.append(np.nan), cens.append(False)
             continue
         e, c = land_event(g["year"].to_numpy(), g["imp_mean"].to_numpy(), int(by),
-                          le["threshold"], le["persistence_years"])
+                          thr, le["persistence_years"])
         g_land.append(e), cens.append(c)
     out["g_land"], out["land_censored"] = g_land, cens
 

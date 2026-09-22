@@ -49,3 +49,22 @@ def test_build_groups(params):
     assert t.loc["late", "baseline_year"] == 2008 and t.loc["late", "g_land"] == 2012
     assert t.loc["late", "n_pre_years"] == 4
     assert t.loc["treat", "g_pop"] == 2015 and np.isnan(t.loc["never", "g_pop"])
+
+
+def test_change_mode_uses_school_baseline(params):
+    import copy
+    panel = pd.DataFrame([dict(school_uid=u, site_id=f"{u}_0", year=y, in_primary=True, enr=100)
+                          for u in ("low", "mid") for y in range(2000, 2021)])
+    # "low" rises 0.02 -> 0.14 (never reaches a 0.25 level, but +0.12 change).
+    # "mid" rises 0.08 -> 0.13 (+0.05, below a 0.10 change).
+    traj = {"low": lambda y: .02 if y < 2008 else .14, "mid": lambda y: .08 if y < 2008 else .13}
+    imp = pd.DataFrame([dict(site_id=f"{u}_0", year=y, buffer_km=b, imp_mean=f(y))
+                        for u, f in traj.items() for y in range(1995, 2021) for b in (1, 2, 5)])
+    defs = copy.deepcopy(params["definitions"])
+    defs["land_event"].update(mode="change", change=0.10)
+    t = events.build(panel, imp, None, params, defs).set_index("school_uid")
+    assert t.loc["low", "g_land"] == 2008 and np.isclose(t.loc["low", "event_threshold"], 0.12)
+    assert t.loc["mid", "group"] == "never_treated"
+    defs["land_event"].update(mode="level", threshold=0.25)
+    t = events.build(panel, imp, None, params, defs).set_index("school_uid")
+    assert t["g_land"].isna().all()
