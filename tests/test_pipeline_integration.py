@@ -72,3 +72,17 @@ def test_end_to_end(sandbox):
     assert pine.frl_share.isna().all()          # -3 suppressed code became NaN
     assert panel.site_id.notna().all()
     assert "prof_z_read" in panel and panel.prof_z_math.dropna().eq(panel.prof_z_math.dropna()).all()
+
+
+def test_coordinates_outside_aoi_are_blanked(sandbox):
+    import geopandas as gpd
+    from shapely.geometry import box
+
+    aoi = gpd.GeoDataFrame(geometry=[box(-85, 33, -83.5, 34.5)], crs="EPSG:4326")
+    aoi.to_file(config.path("interim", "study_area", "aoi.gpkg"), driver="GPKG")
+    df = pd.DataFrame(dict(ncessch=["a", "a", "b"], year=[2000, 2001, 2000],
+                           latitude=[33.75, 40.0, 95.0], longitude=[-84.39, -84.39, -84.0], leaid="1300001"))
+    df = directory.clean(df.assign(county_code=13121))
+    out = directory.null_outside_aoi(df)
+    assert out["coord_outside_aoi"].tolist() == [False, True, False]
+    assert out["latitude"].isna().tolist() == [False, True, True]
