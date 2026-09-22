@@ -85,6 +85,9 @@ sources:
     pull_edfacts: true
     edfacts_start: 2009
     edfacts_grades: [3, 4, 5, 6, 7, 8, 9, 99]
+    # No state testing in 2019-20 (COVID); the API errors instead of
+    # returning an empty result, so skip it explicitly.
+    edfacts_skip_years: [2019]
 
   tiger_counties:
     url: "https://www2.census.gov/geo/tiger/GENZ2020/shp/cb_2020_us_county_500k.zip"

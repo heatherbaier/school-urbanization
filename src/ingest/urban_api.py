@@ -29,6 +29,9 @@ class UrbanClient:
         self.max_retries = cfg["max_retries"]
         self.sleep = cfg["sleep_between_requests_s"]
         self.session = requests.Session()
+        # Endpoint-years that kept failing. Logged at the end of a run and
+        # not cached, so rerunning retries only these.
+        self.failures: list[str] = []
 
     def _get(self, url: str, query: dict | None = None) -> dict:
         for attempt in range(self.max_retries):
@@ -74,6 +77,10 @@ class UrbanClient:
             df = self.fetch(endpoint, query)
         except FileNotFoundError:
             log.info("no data for %s %s", name, year)
+            return None
+        except RuntimeError as e:
+            log.error("skipping %s %s (%s)", name, year, e)
+            self.failures.append(f"{name} {year}")
             return None
         if df.empty:
             log.info("empty result for %s %s", name, year)
