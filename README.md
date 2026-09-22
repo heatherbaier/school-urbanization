@@ -34,6 +34,7 @@ scripts. `data/raw` is written once by the ingest steps and never modified.
 | buffer extraction | `python -m src.exposure.buffers` | `data/interim/exposure/impervious_buffers.parquet` |
 | GHS-SMOD | `python -m src.exposure.smod` | `data/interim/exposure/smod_sites.parquet` |
 | panel | `python -m src.panel.build_panel` | `data/processed/school_year_panel.parquet` |
+| definitions and diagnostics | `python -m src.analysis.diagnostics` | `data/processed/treatment.parquet`, `outputs/diagnostics.md`, `outputs/tables/diag_*.csv`, `outputs/figures/diag_*.png` |
 
 `make all` runs them in order. `slurm/exposure.sbatch` runs the three raster
 steps on the cluster.
