@@ -52,7 +52,11 @@ def pull_edfacts(client, params):
     cfg = params["sources"]["urban_api"]
     y0 = max(cfg["edfacts_start"], params["years"]["school_start"])
     q = {"fips": int(params["study_area"]["state_fips"])}
+    skip = set(cfg.get("edfacts_skip_years", []))
     for year in range(y0, params["years"]["school_end"] + 1):
+        if year in skip:
+            log.info("skipping edfacts %s (configured)", year)
+            continue
         for g in cfg["edfacts_grades"]:
             client.fetch_cached(f"edfacts_assessments/grade-{g}",
                                 f"schools/edfacts/assessments/{year}/grade-{g}", year, q)
@@ -79,6 +83,12 @@ def main(argv=None):
     for name in todo:
         log.info("pulling %s", name)
         PULLS[name](client, params)
+    if client.failures:
+        log.warning("%d requests failed and were skipped; rerun to retry them:", len(client.failures))
+        for f in client.failures:
+            log.warning("  %s", f)
+    else:
+        log.info("all pulls complete")
 
 
 if __name__ == "__main__":
