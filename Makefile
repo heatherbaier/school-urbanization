@@ -2,9 +2,9 @@
 # Run from the repo root inside the conda env `main`.
 PY = python -m
 
-.PHONY: all study_area ccd panel_ids nlcd buffers smod panel test
+.PHONY: all study_area ccd panel_ids nlcd buffers smod panel diagnostics test
 
-all: study_area ccd panel_ids nlcd buffers smod panel
+all: study_area ccd panel_ids nlcd buffers smod panel diagnostics
 
 study_area:          ## TIGER counties -> data/interim/study_area/
 	$(PY) src.ingest.counties
@@ -28,6 +28,9 @@ smod:                ## GHS-SMOD class and distance to urban clusters
 
 panel:               ## school-year analysis panel -> data/processed/
 	$(PY) src.panel.build_panel
+
+diagnostics:         ## fringe/treatment definitions and viability report
+	$(PY) src.analysis.diagnostics
 
 test:
 	pytest -q
