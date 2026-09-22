@@ -42,3 +42,24 @@ def test_smod_distance_and_class():
     d = smod.distance_km(g, [21, 22, 23, 30], 1000)
     assert d[10, 10] == 0 and np.isclose(d[10, 13], 3)
     assert smod.degurba_l1([30, 22, 12, 10]).tolist() == [3, 2, 1, 0]
+
+
+def test_nlcd_clip_from_local_zip(tmp_path, params):
+    import zipfile
+
+    from src.exposure import nlcd
+    crs = params["crs"]["nlcd"]
+    tr = from_origin(1_000_000, 1_300_000, 30, 30)
+    a = np.arange(100 * 100).reshape(100, 100) % 101
+    tif = tmp_path / "Annual_NLCD_FctImp_2001_CU_C1V2.tif"
+    _write(tif, a, tr, crs)
+    zp = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(zp, "w") as z:
+        z.write(tif, tif.name)
+    gdal_path, cleanup = nlcd.open_source(str(zp))
+    assert gdal_path.startswith("/vsizip/") and cleanup is None
+    out = tmp_path / "clip.tif"
+    # Bounds covering rows 10-19 and cols 20-29.
+    nlcd.clip_year(gdal_path, (1_000_600, 1_300_000 - 600, 1_000_900, 1_300_000 - 300), out, 250)
+    with rasterio.open(out) as d:
+        np.testing.assert_array_equal(d.read(1), a[10:20, 20:30])

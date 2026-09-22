@@ -93,12 +93,24 @@ sources:
     url: "https://www2.census.gov/geo/tiger/GENZ2020/shp/cb_2020_us_county_500k.zip"
 
   nlcd:
-    # Annual NLCD Collection 1 fractional impervious surface (0-100 percent).
-    # Either a URL template (read remotely as a COG via GDAL /vsicurl/,
-    # clipped on the fly) or a local path template to already-downloaded
-    # CONUS files. {year} is substituted. VERIFY this template against the
-    # current MRLC release before the first run.
-    fctimp_template: "/vsicurl/https://www.mrlc.gov/downloads/sciweb1/shared/mrlc/data-bundles/Annual_NLCD_FctImp_{year}_CU_C1V1.tif"
+    # Annual NLCD fractional impervious surface (0-100 percent), CONUS.
+    # fctimp_template is either "auto" or an explicit path/URL with {year}.
+    #   auto   try each fctimp_candidates pattern (newest collection first)
+    #          and use the first that answers; run with --probe to see
+    #          which patterns work without downloading anything.
+    #   a .tif URL (prefix /vsicurl/) or local .tif is read in place and
+    #          clipped on the fly.
+    #   a .zip URL is downloaded to data/raw/nlcd/ first, then clipped.
+    fctimp_template: auto
+    fctimp_candidates:
+      - "https://www.mrlc.gov/downloads/sciweb1/shared/mrlc/data-bundles/Annual_NLCD_FctImp_{year}_CU_C1V2.tif"
+      - "https://www.mrlc.gov/downloads/sciweb1/shared/mrlc/data-bundles/Annual_NLCD_FctImp_{year}_CU_C1V2.zip"
+      - "https://www.mrlc.gov/downloads/sciweb1/shared/mrlc/data-bundles/Annual_NLCD_FctImp_{year}_CU_C1V1.zip"
+      - "https://www.mrlc.gov/downloads/sciweb1/shared/mrlc/data-bundles/Annual_NLCD_FctImp_{year}_CU_C1V0.tif"
+      - "https://www.mrlc.gov/downloads/sciweb1/shared/mrlc/data-bundles/Annual_NLCD_FctImp_{year}_CU_C1V0.zip"
+    # Delete a downloaded CONUS zip after clipping, to save disk. The clip
+    # is reproducible from the source URL.
+    delete_zip_after_clip: true
     nodata: 250
     # Values above 100 are treated as nodata regardless of the declared value.
     valid_max: 100
