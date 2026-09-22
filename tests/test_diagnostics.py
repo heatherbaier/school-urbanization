@@ -35,12 +35,14 @@ def test_diagnostics_runs(tmp_path, params, monkeypatch):
 
     # Two cached pre-2000 directory years; one school's 1998 geocode is 2 km off.
     early = pd.DataFrame([dict(ncessch=130000100000 + i, year=y, school_name=f"s{i}", leaid="1300001",
-                               county_code=13121, latitude=33.75 + i * 0.01 + (0.018 if (i == 0 and y == 1998) else 0),
+                               county_code=(-1 if y == 1998 else 13121), latitude=33.75 + i * 0.01 + (0.018 if (i == 0 and y == 1998) else 0),
                                longitude=-84.39, enrollment=100)
                           for i in range(3) for y in (1998, 1999, 2000)])
     for y, g in early.groupby("year"):
         g.to_parquet(config.path("raw", "urban", "ccd_directory", f"{y}.parquet"), index=False)
 
+    pd.DataFrame(dict(ncessch=[f"{130000100000 + i:012d}" for i in range(3)])).to_parquet(
+        config.path("interim", "ccd", "directory.parquet"))
     diagnostics.main()
 
     report = (tmp_path / "diagnostics.md").read_text()
