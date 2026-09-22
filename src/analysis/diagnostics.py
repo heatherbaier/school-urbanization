@@ -156,7 +156,8 @@ def early_ccd_coverage(params) -> tuple[pd.DataFrame | None, str]:
             share_with_county_code=g["county_code"].notna().mean(),
             share_with_coords=g["x"].notna().mean(),
             share_with_enrollment=g["enrollment"].notna().mean() if "enrollment" in g else np.nan,
-            share_with_race=(g.set_index(["ncessch", "year"]).index.map(race_ok).fillna(False).mean()
+            share_with_race=(pd.Series(g.set_index(["ncessch", "year"]).index.map(race_ok))
+                             .fillna(False).astype(bool).mean()
                              if race_ok is not None else np.nan),
             n_matched_to_ref=len(m),
             median_m_from_ref=dist.median() if len(m) else np.nan,
@@ -280,7 +281,10 @@ def main():
         "sensitivity": sensitivity(panel, imp, smod, params),
         "outcome_coverage": outcome_coverage(panel, t),
     }
-    early, early_status = early_ccd_coverage(params)
+    if params["years"].get("early_ccd_check", False):
+        early, early_status = early_ccd_coverage(params)
+    else:
+        early, early_status = None, "off"
     if early is not None:
         tables["early_ccd_coverage"] = early
     lvp = land_vs_pop(t)
@@ -302,7 +306,9 @@ def main():
         event_text = (f"The land event is the first year the {le['buffer_km']} km buffer reaches "
                       f"{le['threshold']} and stays there for {le['persistence_years']} years")
     y0 = params["years"]["school_start"]
-    if early is not None:
+    if early_status == "off":
+        early_text = ""
+    elif early is not None:
         early_text = (f"Cached CCD years before {y0}, study counties by CCD county code. Distances compare each "
                       f"school's coordinate with its own {y0} coordinate. Large or frequent gaps mean coarse early "
                       "geocodes, which would make early buffer exposure unreliable.\n\n" + _md(early))
@@ -316,6 +322,9 @@ def main():
         early_text = (f"No CCD years before {y0} are cached. Pull them with\n\n"
                       f"    python -m src.ingest.ccd --only directory enrollment --start "
                       f"{params['years'].get('early_ccd_start', 1986)} --end {y0 - 1}\n\nand rerun this report.")
+    early_section = ("" if early_status == "off" else
+                     f"\n## CCD coverage before {y0}\n\nWhether extending the school panel back into "
+                     f"the 1990s boom is feasible.\n\n{early_text}\n")
     report = f"""# Pilot diagnostics — {params['pilot']}
 
 Primary sample only (regular, non-charter, non-virtual schools) unless stated.
@@ -361,13 +370,7 @@ Share of treated schools with a non-missing value at each year relative to the e
 ## Land versus population events among fringe schools
 
 {_md(lvp.reset_index())}
-
-## CCD coverage before {y0}
-
-Whether extending the school panel back into the 1990s boom is feasible.
-
-{early_text}
-"""
+{early_section}"""
     fp = report_dir / "diagnostics.md"
     fp.write_text(report)
     log.info("wrote %s", fp)

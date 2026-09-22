@@ -13,6 +13,7 @@ def test_diagnostics_runs(tmp_path, params, monkeypatch):
     p = copy.deepcopy(params)
     for k in p["paths"]:
         p["paths"][k] = str(tmp_path / k)
+    p["years"]["early_ccd_check"] = True
     for mod in (config, diagnostics, events):
         monkeypatch.setattr(mod, "load_params", lambda *a, **k: p)
 
@@ -40,6 +41,9 @@ def test_diagnostics_runs(tmp_path, params, monkeypatch):
                           for i in range(3) for y in (1998, 1999, 2000)])
     for y, g in early.groupby("year"):
         g.to_parquet(config.path("raw", "urban", "ccd_directory", f"{y}.parquet"), index=False)
+        if y < 2000:  # race detail for the first two schools only
+            pd.DataFrame(dict(ncessch=g["ncessch"].iloc[:2], year=y, race=1, enrollment=50)).to_parquet(
+                config.path("raw", "urban", "ccd_enrollment_race", f"{y}.parquet"), index=False)
 
     pd.DataFrame(dict(ncessch=[f"{130000100000 + i:012d}" for i in range(3)])).to_parquet(
         config.path("interim", "ccd", "directory.parquet"))
@@ -60,3 +64,9 @@ def test_diagnostics_runs(tmp_path, params, monkeypatch):
     assert list(ec.index) == [1998, 1999]
     assert ec.loc[1998, "share_over_500m_from_ref"] > 0 and ec.loc[1999, "median_m_from_ref"] < 1
     assert "CCD coverage before 2000" in report
+    assert np.isclose(ec.loc[1999, "share_with_race"], 2 / 3)
+
+    # Off by default: no section and no early-CCD work.
+    p["years"]["early_ccd_check"] = False
+    diagnostics.main()
+    assert "CCD coverage before" not in (tmp_path / "diagnostics.md").read_text()

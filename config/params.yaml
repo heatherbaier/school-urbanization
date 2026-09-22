@@ -59,6 +59,8 @@ years:
   # --start 1986 --end 1999). Not used by the panel unless school_start
   # is lowered.
   early_ccd_start: 1986
+  # Run that check in the diagnostics report. Off: the pilot uses 2000 on.
+  early_ccd_check: false
 
 crs:
   # NAD83 / UTM zone 16N. Used for all distance and buffer geometry.
