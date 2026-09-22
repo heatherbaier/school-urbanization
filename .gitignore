@@ -1,0 +1,13 @@
+data/raw/*
+data/interim/*
+data/processed/*
+!data/*/.gitkeep
+outputs/figures/*
+outputs/tables/*
+!outputs/*/.gitkeep
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+*.log
+slurm-*.out

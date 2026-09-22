@@ -1,0 +1,176 @@
+# All thresholds, buffers, years, and paths for the pilot.
+# Every sensitivity choice lives here so the specification grid can be run
+# without code changes. Values are starting points, to be tuned after
+# inspecting the Atlanta distributions.
+
+pilot: atlanta
+
+study_area:
+  state_fips: "13"
+  state_abbr: GA
+  # Atlanta-Sandy Springs-Roswell MSA, 29 counties (2013 OMB delineation).
+  # Names are checked against the TIGER county file at ingest time, so a
+  # wrong FIPS code fails loudly instead of silently dropping a county.
+  counties:
+    "13013": Barrow
+    "13015": Bartow
+    "13035": Butts
+    "13045": Carroll
+    "13057": Cherokee
+    "13063": Clayton
+    "13067": Cobb
+    "13077": Coweta
+    "13085": Dawson
+    "13089": DeKalb
+    "13097": Douglas
+    "13113": Fayette
+    "13117": Forsyth
+    "13121": Fulton
+    "13135": Gwinnett
+    "13143": Haralson
+    "13149": Heard
+    "13151": Henry
+    "13159": Jasper
+    "13171": Lamar
+    "13199": Meriwether
+    "13211": Morgan
+    "13217": Newton
+    "13223": Paulding
+    "13227": Pickens
+    "13231": Pike
+    "13247": Rockdale
+    "13255": Spalding
+    "13297": Walton
+  # Rasters are clipped to the county union plus this margin, so buffers
+  # around schools near the edge are not truncated. Must be >= max buffer.
+  clip_margin_km: 10
+
+years:
+  # School years are indexed by the fall year (2015 = 2015-16), matching
+  # the Urban Institute portal convention.
+  school_start: 2000
+  school_end: 2022
+  # Land cover is pulled further back so early-opening schools have a
+  # land-based pre-period even when school data starts later.
+  land_start: 1995
+  land_end: 2023
+
+crs:
+  # NAD83 / UTM zone 16N. Used for all distance and buffer geometry.
+  projected: "EPSG:26916"
+  geographic: "EPSG:4326"
+  nlcd: "EPSG:5070"
+  ghsl: "ESRI:54009"
+
+paths:
+  raw: data/raw
+  interim: data/interim
+  processed: data/processed
+  figures: outputs/figures
+  tables: outputs/tables
+
+sources:
+  urban_api:
+    base_url: "https://educationdata.urban.org/api/v1"
+    page_size: 10000
+    timeout_s: 120
+    max_retries: 5
+    sleep_between_requests_s: 0.2
+    # Grade-level totals (no race detail) plus race detail for the
+    # all-grade total. Pulling race x grade is ~10x larger and not needed
+    # for the first outcomes.
+    enrollment_grades: [pk, k, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 99]
+    pull_meps: true
+    meps_start: 2009
+    pull_edfacts: true
+    edfacts_start: 2009
+    edfacts_grades: [3, 4, 5, 6, 7, 8, 9, 99]
+
+  tiger_counties:
+    url: "https://www2.census.gov/geo/tiger/GENZ2020/shp/cb_2020_us_county_500k.zip"
+
+  nlcd:
+    # Annual NLCD Collection 1 fractional impervious surface (0-100 percent).
+    # Either a URL template (read remotely as a COG via GDAL /vsicurl/,
+    # clipped on the fly) or a local path template to already-downloaded
+    # CONUS files. {year} is substituted. VERIFY this template against the
+    # current MRLC release before the first run.
+    fctimp_template: "/vsicurl/https://www.mrlc.gov/downloads/sciweb1/shared/mrlc/data-bundles/Annual_NLCD_FctImp_{year}_CU_C1V1.tif"
+    nodata: 250
+    # Values above 100 are treated as nodata regardless of the declared value.
+    valid_max: 100
+
+  ghs_smod:
+    # GHS-SMOD R2023A, 1 km Mollweide, five-year epochs. {epoch} is
+    # substituted. The global zip holds one GeoTIFF.
+    url_template: "https://jeodpp.jrc.ec.europa.eu/ftp/jrc-opendata/GHSL/GHS_SMOD_GLOBE_R2023A/GHS_SMOD_E{epoch}_GLOBE_R2023A_54009_1000/V2-0/GHS_SMOD_E{epoch}_GLOBE_R2023A_54009_1000_V2_0.zip"
+    epochs: [1990, 1995, 2000, 2005, 2010, 2015, 2020, 2025, 2030]
+    # Epochs after this are model projections, not observations.
+    last_observed_epoch: 2020
+
+panel:
+  # Primary sample filters, applied as flags rather than drops so the full
+  # universe stays in the panel.
+  primary_school_types: [1]          # CCD school_type 1 = regular school
+  exclude_charter_from_primary: true
+  exclude_virtual_from_primary: true
+
+  race_groups:
+    # Urban portal race codes -> harmonized groups. Asian and Pacific
+    # Islander are merged because they were one category before ~2010.
+    white: [1]
+    black: [2]
+    hispanic: [3]
+    asian_pi: [4, 6]
+    aian: [5]
+    multi: [7]
+  # Groups present in every year, used for the break-free diversity index.
+  consistent_race_groups: [white, black, hispanic, asian_pi, aian]
+
+crosswalk:
+  # Link an ID that ends to an ID that starts when both are at nearly the
+  # same place with a similar name, within max_gap_years.
+  max_distance_m: 300
+  min_name_similarity: 0.6
+  max_gap_years: 1
+  # Or same place, any name, when the state school ID is unchanged.
+  use_state_school_id: true
+
+relocation:
+  # Coordinate moves larger than this between consecutive years count as a
+  # candidate relocation.
+  move_threshold_m: 500
+  # A move that returns to within this distance of the earlier location
+  # within return_window_years is treated as geocode noise, not a move.
+  return_tolerance_m: 250
+  return_window_years: 2
+  # Candidate moves below this are always flagged for manual review, since
+  # early CCD geocodes can be coarse.
+  review_threshold_m: 2000
+
+exposure:
+  buffers_km: [1, 2, 5]
+  # Minimum share of valid raster cells for a buffer mean to be kept.
+  min_valid_frac: 0.8
+  smod:
+    urban_cluster_codes: [21, 22, 23, 30]
+    urban_centre_codes: [30]
+    rural_codes: [11, 12, 13]
+
+definitions:
+  # Placeholders for step 5. Kept here so every threshold is in one file.
+  baseline:
+    mode: first_year          # first_year | fixed_year
+    fixed_year: 2000
+    min_pre_years: 3
+  fringe:
+    buffer_km: 2
+    max_impervious: 0.10
+    max_km_to_urban_cluster: 10
+  land_event:
+    buffer_km: 2
+    threshold: 0.25
+    persistence_years: 3
+  pop_event:
+    from_codes: [11, 12, 13]
+    to_codes: [21, 22, 23, 30]
